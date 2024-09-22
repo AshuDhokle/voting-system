@@ -1,152 +1,214 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-contract Voting{
-    
-    address immutable _owner;
-    uint256 public number_of_voters = 0;
-    uint256 public number_of_parties = 0;
-    uint256 public number_of_ballouts = 0;
+contract Voting {
+    address public immutable owner;
+    uint256 public numberOfVoters;  
+    uint256 public numberOfParties; 
+    uint256 public numberOfBallots; 
 
-    uint256 public party_creation_fee = 0.01 ether;
-    uint256 public party_participation_fee = 0.01 ether;
+    uint256 public constant PARTY_CREATION_FEE = 0.01 ether;
+    uint256 public constant PARTY_PARTICIPATION_FEE = 0.01 ether;
 
-    
-    struct Party{
-        address owner_address;
-        uint256 party_id;
-        string party_name;
-        string candidate_name;
-        address candidate_address;
+    struct Party {
+        address ownerAddress;
+        uint256 partyId;
+        string partyName;
+        string candidateName;
     }
 
-    enum balloutState {
-      CREATED,
-      ACTIVE,
-      ENDED
+    enum BallotState {
+        CREATED,
+        ACTIVE,
+        ENDED
     }
 
-    struct Ballout{
-        address ballout_owner;
-        string ballout_name;
-        uint256 number_of_participants;
-        Party[] participating_parties;
-        mapping(uint256=>uint256) party_id_to_votes;
-        balloutState state;
+    struct Ballot {
+        uint256 ballotId;
+        string ballotName;
+        uint256 numberOfParticipants;
         uint256 numberOfVotes;
         uint256 winner;
-    }     
-
-    mapping(address => bool) registered_voter;
-    mapping(uint256 => Party) id_to_party;
-    mapping(uint256 => Ballout) id_to_ballout;
- 
-    constructor () {
-        _owner = msg.sender;
+        BallotState state;
+        uint256[] participatingPartyIds;
+        mapping(uint256 => uint256) partyVotes; // party id to votes
+        mapping(address => bool) voted;         // voter voted
+        mapping(uint256 => bool) registeredParties;  // Track registered parties to avoid duplicate loops
     }
-    
-    modifier onlyOwner{
-        require(msg.sender == _owner,"RESTRICTED_TO_OWNER");
+
+    mapping(address => bool) public registeredVoter;
+    mapping(uint256 => Party) public idToParty;
+    mapping(address => uint256) public addressToPartyId;
+    mapping(uint256 => Ballot) public idToBallot;
+
+    // Events
+    event PartyCreated(uint256 partyId, string partyName, string candidateName);
+    event BallotCreated(uint256 ballotId, string ballotName);
+    event VoteCast(uint256 ballotId, uint256 partyId, address voter);
+    event BallotEnded(uint256 ballotId, uint256 winner);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner allowed");
         _;
     }
 
-    modifier onlyCreatedBallout(uint256 _balloutId){
-        require(id_to_ballout[_balloutId].state == balloutState.CREATED, 'REGISTRATION_ENDED');
-        _;
-    }
-    
-    modifier onlyActiveBallout(uint256 _balloutId){
-        require(id_to_ballout[_balloutId].state == balloutState.ACTIVE, "BALLOUT_ENDED");
-        _;
-    }
-    
-    modifier onlyPartyOwner(uint256 _partyId){
-        require( msg.sender == id_to_party[_partyId].owner_address,'RESTRICTED_TO_PARTY_OWNER');
+    modifier onlyBallotState(uint256 ballotId, BallotState requiredState) {
+        require(idToBallot[ballotId].state == requiredState, "Invalid ballot state");
         _;
     }
 
-    modifier onlyRegisteredVoters{
-        require(registered_voter[msg.sender] == true,'REGISTERED_VOTERS_ALLOWED_ONLY');
-        _; 
+    modifier onlyPartyOwner(uint256 partyId) {
+        require(msg.sender == idToParty[partyId].ownerAddress, "Not party owner");
+        _;
     }
 
-    function registerVoter() public returns(uint256){
-        registered_voter[msg.sender] = true;
-        number_of_voters++;
-        return number_of_voters;
-    }
-    
-    function createParty(string memory _partyName, string memory _candidateName, address _candidateAddress) public payable returns(uint256){
-        require(msg.value == party_creation_fee,'PARTY_REGISTRATION_FEE_IS_LESS_THAN_REQUIRED');
-
-        Party storage newParty = id_to_party[number_of_parties];
-        
-        newParty.owner_address = msg.sender;
-        newParty.party_name = _partyName;
-        newParty.party_id = number_of_parties;
-        newParty.candidate_name = _candidateName;
-        newParty.candidate_address = _candidateAddress;    
-        
-        number_of_parties++;
-
-        return number_of_parties - 1;
-    }
-    
-    function createBallout(string memory _balloutName) public onlyOwner returns(uint256){
-        
-        Ballout storage newBallout = id_to_ballout[number_of_ballouts];
-        
-        newBallout.ballout_name = _balloutName;
-        newBallout.ballout_owner = msg.sender;
-        
-        number_of_ballouts++;
-
-        return number_of_ballouts - 1;
-    }
-   
-    function registerParty(uint256 _partyId, uint256 _balloutId) public payable onlyCreatedBallout(_balloutId) onlyPartyOwner(_partyId) {
-        
-        require(msg.value > party_participation_fee,"PROVIDE_ENOUGH_REGISTRATION_FEES");
-        
-        Ballout storage ballout = id_to_ballout[_balloutId];
-        Party storage party = id_to_party[_partyId];
-
-        ballout.number_of_participants = ballout.number_of_participants++;
-        ballout.participating_parties.push(party);
-        
-    }
-    
-    function startBallout(uint256 _balloutId) public onlyOwner onlyCreatedBallout(_balloutId){
-        id_to_ballout[_balloutId].state = balloutState.ACTIVE;
+    modifier onlyRegisteredVoter() {
+        require(registeredVoter[msg.sender], "Not registered");
+        _;
     }
 
-    function endBallout(uint256 _balloutId) public onlyOwner onlyActiveBallout(_balloutId) returns(uint256){
-        uint256 winner = 0;
-        uint256 maxVotes = 0;
-        Ballout storage ballout = id_to_ballout[_balloutId];
-        uint numberOfParticipants = ballout.number_of_participants;
-        for(uint i = 0;i<numberOfParticipants;i++){
-            uint256 currVotes = ballout.party_id_to_votes[ballout.participating_parties[i].party_id];
-            if(currVotes > maxVotes){
-                maxVotes = currVotes;
-                winner = ballout.participating_parties[i].party_id; 
+    modifier singlePartyOwner() {
+        require(addressToPartyId[msg.sender] == 0, "Already own a party");
+        require(msg.sender != owner, "Party owner can't be owner of contract");
+        _;
+    }
+
+    modifier onlyOneVote(uint256 ballotId) {
+        require(!idToBallot[ballotId].voted[msg.sender], "Already voted");
+        _;
+    }
+
+    modifier registerOnlyOnce(uint256 partyId, uint256 ballotId) {
+        require(!idToBallot[ballotId].registeredParties[partyId], "Party already registered in this ballot");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function registerVoter() external {
+        require(!registeredVoter[msg.sender], "Already registered");
+        registeredVoter[msg.sender] = true;
+        numberOfVoters++;
+    }
+
+    function createParty(
+        string memory partyName,
+        string memory candidateName
+    ) external payable singlePartyOwner returns (uint256) {
+        require(msg.value == PARTY_CREATION_FEE, "Insufficient party creation fee");
+        require(registeredVoter[msg.sender], "Candidate not registered as a voter");
+
+        numberOfParties++;
+        idToParty[numberOfParties] = Party({
+            ownerAddress: msg.sender,
+            partyId: numberOfParties,
+            partyName: partyName,
+            candidateName: candidateName
+        });
+
+        addressToPartyId[msg.sender] = numberOfParties;
+
+        emit PartyCreated(numberOfParties, partyName, candidateName); // Emit event
+
+        return numberOfParties;
+    }
+
+    function createBallot(string memory ballotName) external onlyOwner returns (uint256) {
+        numberOfBallots++;
+        idToBallot[numberOfBallots].ballotName = ballotName;
+        idToBallot[numberOfBallots].state = BallotState.CREATED;
+        idToBallot[numberOfBallots].ballotId = numberOfBallots;
+        idToBallot[numberOfBallots].winner = type(uint256).max; // Initialize winner to a max value
+        
+        emit BallotCreated(numberOfBallots, ballotName); // Emit event
+
+        return numberOfBallots;
+    }
+
+    function registerPartyForBallot(uint256 partyId, uint256 ballotId)
+        external
+        payable
+        onlyBallotState(ballotId, BallotState.CREATED)
+        onlyPartyOwner(partyId)
+        registerOnlyOnce(partyId, ballotId)
+    {
+        require(msg.value == PARTY_PARTICIPATION_FEE, "Insufficient participation fee");
+
+        Ballot storage ballot = idToBallot[ballotId];
+        ballot.participatingPartyIds.push(partyId);
+        ballot.numberOfParticipants++;
+        ballot.registeredParties[partyId] = true;  // Mark party as registered
+    }
+
+    function startBallot(uint256 ballotId)
+        external
+        onlyOwner
+        onlyBallotState(ballotId, BallotState.CREATED)
+    {
+        idToBallot[ballotId].state = BallotState.ACTIVE;
+    }
+
+    function endBallot(uint256 ballotId)
+        external
+        onlyOwner
+        onlyBallotState(ballotId, BallotState.ACTIVE)
+        returns (uint256)
+    {
+        Ballot storage ballot = idToBallot[ballotId];
+        uint256 winner;
+        uint256 maxVotes;
+
+        if (ballot.numberOfParticipants == 1) {
+            winner = ballot.participatingPartyIds[0];
+        } else {
+            for (uint256 i = 0; i < ballot.numberOfParticipants; i++) {
+                uint256 partyId = ballot.participatingPartyIds[i];
+                uint256 votes = ballot.partyVotes[partyId];
+                if (votes > maxVotes) {
+                    maxVotes = votes;
+                    winner = partyId;
+                }
             }
         }
-        
-        ballout.winner = winner;
-        ballout.state = balloutState.ENDED;
+
+        ballot.winner = winner;
+        ballot.state = BallotState.ENDED;
+
+        emit BallotEnded(ballotId, winner); // Emit event
 
         return winner;
     }
-    
-    function vote(uint256 _balloutId, uint256 _votedPartyId) public onlyActiveBallout(_balloutId) onlyRegisteredVoters{
-     Ballout storage ballout = id_to_ballout[_balloutId];
-     ballout.party_id_to_votes[_votedPartyId]++;
-     ballout.numberOfVotes++;
+
+    function vote(uint256 ballotId, uint256 partyId)
+        external
+        onlyBallotState(ballotId, BallotState.ACTIVE)
+        onlyRegisteredVoter
+        onlyOneVote(ballotId)
+    {
+        Ballot storage ballot = idToBallot[ballotId];
+        require(ballot.registeredParties[partyId], "Party not registered in ballot");
+
+        ballot.partyVotes[partyId]++;
+        ballot.numberOfVotes++;
+        ballot.voted[msg.sender] = true;
+
+        emit VoteCast(ballotId, partyId, msg.sender); // Emit event
     }
 
-    function getAllRegisteredParties(uint256 _balloutId) public view returns(Party[] memory){
-       return id_to_ballout[_balloutId].participating_parties;
+    function AllBallots() external view returns (uint256[] memory) {
+        uint256[] memory ballotIds = new uint256[](numberOfBallots); // Initialize with the correct size
+        for (uint256 i = 0; i < numberOfBallots; i++) {
+            ballotIds[i] = idToBallot[i + 1].ballotId; // Use i + 1 as ballotId likely starts from 1
+        }
+        return ballotIds;
     }
-   
+    
+    function getAllParticipatingPartyIds(uint256 ballotId) external view returns (uint256[] memory){
+        return idToBallot[ballotId].participatingPartyIds;
+    }
 }
+
+
+
